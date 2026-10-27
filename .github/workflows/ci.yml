@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  schedule:
+    # Weekly, so breakage from new Caddy/libdns releases surfaces
+    # even when this repo is dormant.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go vet ./...
+      # The live test (TestLive) skips itself: DREAMHOST_API_KEY is
+      # deliberately not provided in CI.
+      - run: go test ./...
+
+  smoke-build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The version pinned in go.mod, and whatever is newest.
+        caddy: ["v2.11.7", "latest"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+      - name: Build Caddy ${{ matrix.caddy }} with this module
+        run: xcaddy build ${{ matrix.caddy }} --with github.com/zanehost/dh-caddy-dns=. --output ./caddy-smoke
+      - name: Module registers
+        run: ./caddy-smoke list-modules | grep dns.providers.dreamhost
+      - name: Caddyfile adapts
+        run: |
+          printf '{\n\tacme_dns dreamhost testkey\n}\nexample.com {\n\trespond "ok"\n}\n' > Caddyfile.smoke
+          ./caddy-smoke adapt --config Caddyfile.smoke | grep -q '"name": *"dreamhost"'
